@@ -1,7 +1,7 @@
 # Point Transformer
 This repository reproduces [DopplerPTNet](https://iopscience.iop.org/article/10.1088/1742-6596/2809/1/012006). \
-The codebase is an unofficial implementation of DopplerPTNet for semantic segmentation.
-
+The codebase is an unofficial implementation of DopplerPTNet for semantic segmentation. \
+This code is created based on the descroption of [DopplerPTNet](https://iopscience.iop.org/article/10.1088/1742-6596/2809/1/012006). If you find the implementation is not accurate, please raise an issue.
 
 ---
 ## Dependencies
