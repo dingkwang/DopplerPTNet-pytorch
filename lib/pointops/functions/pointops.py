@@ -4,34 +4,57 @@ import torch
 from torch.autograd import Function
 import torch.nn as nn
 
-import pointops_cuda
+# import pointops_cuda
 
 
-class FurthestSampling(Function):
-    @staticmethod
-    def forward(ctx, xyz, offset, new_offset):
-        """
-        input: xyz: (n, 3), offset: (b), new_offset: (b)
-        output: idx: (m)
-        """
-        assert xyz.is_contiguous()
-        n, b, n_max = xyz.shape[0], offset.shape[0], offset[0]
-        for i in range(1, b):
-            n_max = max(offset[i] - offset[i-1], n_max)
-        idx = torch.cuda.IntTensor(new_offset[b-1].item()).zero_()
-        tmp = torch.cuda.FloatTensor(n).fill_(1e10)
-        pointops_cuda.furthestsampling_cuda(b, n_max, xyz, offset, new_offset, tmp, idx)
-        del tmp
-        return idx
-
-furthestsampling = FurthestSampling.apply
-
+import numpy as np
 
 class KNNQuery(Function):
     @staticmethod
+    def knn_query(xyz, new_xyz, offset, new_offset, nsample):
+        """
+        input: xyzv: (n, 4), new_xyzv: (m, 4), offset: (b), new_offset: (b)
+        output: idx: (m, nsample), dist2: (m, nsample)
+        """
+        idx_list = []
+        dist2_list = []
+        
+        # Loop over each batch
+        for b in range(offset.shape[0]):
+            # Get the batch range for both original points and query points
+            start_n, end_n = (0 if b == 0 else offset[b-1]), offset[b]
+            start_m, end_m = (0 if b == 0 else new_offset[b-1]), new_offset[b]
+            
+            # Extract points and query points for the current batch
+            points = xyz[start_n:end_n]  # (n_batch, 3) -> Use only (x, y, z)
+            query_points = new_xyz[start_m:end_m]  # (m_batch, 3)
+            
+            # Efficient distance computation using broadcasting or torch.cdist
+            dist_matrix_squared = torch.cdist(query_points, points, p=2) ** 2  # (m_batch, n_batch)
+            
+            k = min(nsample, end_m - start_m)
+            # Use torch.topk to find the 'nsample' smallest distances (KNN)
+            dist2, knn_indices = torch.topk(dist_matrix_squared, k=k, largest=False, dim=-1)  # (m_batch, nsample)
+            
+            dist2 = dist2.to(xyz.device)
+            knn_indices = knn_indices.to(xyz.device)
+            # Adjust indices to the global index space
+            knn_indices += start_n
+            
+            # Append results for the current batch
+            idx_list.append(knn_indices)
+            dist2_list.append(dist2)
+
+        # Concatenate the results for all batches
+        idx = torch.cat(idx_list, dim=0)
+        dist2 = torch.cat(dist2_list, dim=0)
+            
+        return idx, dist2
+    
+    @staticmethod
     def forward(ctx, nsample, xyz, new_xyz, offset, new_offset):
         """
-        input: xyz: (n, 3), new_xyz: (m, 3), offset: (b), new_offset: (b)
+        input: xyzv: (n, 4), new_xyzv: (m, 4), offset: (b), new_offset: (b)
         output: idx: (m, nsample), dist2: (m, nsample)
         """
         if new_xyz is None: new_xyz = xyz
@@ -39,46 +62,119 @@ class KNNQuery(Function):
         m = new_xyz.shape[0]
         idx = torch.cuda.IntTensor(m, nsample).zero_()
         dist2 = torch.cuda.FloatTensor(m, nsample).zero_()
-        pointops_cuda.knnquery_cuda(m, nsample, xyz, new_xyz, offset, new_offset, idx, dist2)
-        return idx, torch.sqrt(dist2)
+        # pointops_cuda.knnquery_cuda(m, nsample, xyz, new_xyz, offset, new_offset, idx, dist2)
+        idx, dist2 = KNNQuery.knn_query(xyz, new_xyz, offset, new_offset, nsample)
+        return idx, dist2
+
 
 knnquery = KNNQuery.apply
 
 
-class Grouping(Function):
-    @staticmethod
-    def forward(ctx, input, idx):
-        """
-        input: input: (n, c), idx : (m, nsample)
-        output: (m, nsample, c)
-        """
-        assert input.is_contiguous() and idx.is_contiguous()
-        m, nsample, n, c = idx.shape[0], idx.shape[1], input.shape[0], input.shape[1]
-        output = torch.cuda.FloatTensor(m, nsample, c)
-        pointops_cuda.grouping_forward_cuda(m, nsample, c, input, idx, output)
-        ctx.n = n
-        ctx.save_for_backward(idx)
-        return output
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        """
-        input: grad_out: (m, c, nsample)
-        output: (n, c), None
-        """
-        n = ctx.n
-        idx, = ctx.saved_tensors
-        m, nsample, c = grad_output.shape
-        grad_input = torch.cuda.FloatTensor(n, c).zero_()
-        pointops_cuda.grouping_backward_cuda(m, nsample, c, grad_output, idx, grad_input)
-        return grad_input, None
-
-grouping = Grouping.apply
-
-
-def queryandgroup(nsample, xyz, new_xyz, feat, idx, offset, new_offset, use_xyz=True):
+def furthestsampling_py(b, xyzv, offset, new_offset, idx):
     """
-    input: xyz: (n, 3), new_xyz: (m, 3), feat: (n, c), idx: (m, nsample), offset: (b), new_offset: (b)
+    Python implementation of the furthest point sampling algorithm with 4D input (x, y, z, v).
+
+    Args:
+        b (int): Number of batches.
+        xyzv (np.array): Input point cloud coordinates with velocity, shape (N, 4).
+        offset (np.array): Offset indices for batches, shape (B+1,).
+        new_offset (np.array): New offset indices for batches, shape (B+1,).
+        tmp (np.array): Temporary distance array, shape (N,).
+        idx (np.array): Array for storing indices of sampled points, shape (M,).
+    
+    Returns:
+        idx (np.array): Indices of sampled points, shape (M,).
+    """
+    n = xyzv.shape[1]  # N points per batch
+    m = new_offset[-1]  # Total number of sampled points
+    
+    i_p = 0
+    for i in range(b):  # Loop over each batch
+        if i == 0:
+            start_n = 0
+            start_m = 0
+        else:
+            start_n = offset[i-1]
+            start_m  = new_offset[i-1] 
+        end_n = offset[i]
+        end_m = new_offset[i]
+        # Initialize the first sampled point in the current batch
+        points = xyzv[start_n:end_n]  # Points from the current batch
+        num_samples = end_m - start_m
+        distances = torch.full((end_n - start_n,), np.inf).to(xyzv.device)
+        idx[i_p] = torch.randint(start_n, end_n, (1,))
+        for _ in range(num_samples):
+            # Update distances: compute distances between all points and the latest sampled point
+            last_sampled_point = points[idx[i_p] - start_n]  # Use relative index
+            current_distances = torch.sum((points - last_sampled_point) ** 2, axis=1)  # Squared Euclidean distance
+            distances = torch.minimum(distances, current_distances)  # Keep the minimum distance for each point
+            
+            # Pick the point that is the farthest from the current set of sampled points
+            next_sampled_idx = distances.argmax() + start_n  # Add start_n to get the global index
+            i_p+=1
+            if i_p >= idx.shape[0]:
+                print(i_p)
+                continue
+            idx[i_p] = next_sampled_idx
+            
+    return idx
+
+class FurthestSampling(Function):
+    @staticmethod
+    def forward(ctx, xyzv, offset, new_offset):
+        """
+        input: xyz: (n, 3), offset: (b), new_offset: (b)
+        output: idx: (m)
+        """
+        assert xyzv.is_contiguous()
+        n, b, n_max = xyzv.shape[0], offset.shape[0], offset[0]
+        for i in range(1, b):
+            n_max = max(offset[i] - offset[i-1], n_max)
+        idx = torch.cuda.IntTensor(new_offset[b-1].item()).zero_()
+        # pointops_cuda.furthestsampling_cuda(b, n_max, xyz, offset, new_offset, tmp, idx)
+        furthestsampling_py(b, xyzv, offset, new_offset, idx)
+        return idx
+
+furthestsampling = FurthestSampling.apply
+
+
+import numpy as np
+
+
+
+def gather_operation(features, idx):
+    """
+    Simulates gather_operation to gather features of specific points from a larger set.
+    
+    Args:
+    - features: (B, C, N) tensor where B is batch size, C is number of channels, N is number of points.
+    - idx: (B, npoint) tensor containing the indices of points to gather.
+    
+    Returns:
+    - gathered_features: (B, C, npoint) gathered features from the input based on idx.
+    """
+    # Use torch.gather to gather the features according to idx
+    B, C, N = features.shape  # Batch size, Feature dimension, Number of points
+    _, npoint = idx.shape     # npoint is the number of points we want to gather
+    
+    # Expand idx to match the feature dimensions
+    idx_expanded = idx.unsqueeze(1).expand(B, C, npoint)  # (B, C, npoint)
+    
+    # Gather the features using advanced indexing
+    gathered_features = torch.gather(features, 2, idx_expanded)  # Gather along the third dimension (points)
+    
+    return gathered_features
+
+
+
+def queryandgroup(nsample, xyz, new_xyz, feat, idx, offset, new_offset, feature_only=True):
+    """
+    input: xyz: (n, 4), 
+    new_xyz: (m, 4), 
+    feat: (n, c), 
+    idx: (m, nsample), 
+    offset: (b), 
+    new_offset: (b)
     output: new_feat: (m, c+3, nsample), grouped_idx: (m, nsample)
     """
     assert xyz.is_contiguous() and new_xyz.is_contiguous() and feat.is_contiguous()
@@ -87,14 +183,15 @@ def queryandgroup(nsample, xyz, new_xyz, feat, idx, offset, new_offset, use_xyz=
     if idx is None:
         idx, _ = knnquery(nsample, xyz, new_xyz, offset, new_offset) # (m, nsample)
 
+    c_xyz = xyz.shape[1]
     n, m, c = xyz.shape[0], new_xyz.shape[0], feat.shape[1]
-    grouped_xyz = xyz[idx.view(-1).long(), :].view(m, nsample, 3) # (m, nsample, 3)
-    #grouped_xyz = grouping(xyz, idx) # (m, nsample, 3)
-    grouped_xyz -= new_xyz.unsqueeze(1) # (m, nsample, 3)
-    grouped_feat = feat[idx.view(-1).long(), :].view(m, nsample, c) # (m, nsample, c)
+    grouped_xyz = xyz[idx.view(-1).long(), :c_xyz].view(m, nsample, c_xyz) # (m, nsample, c_xyz)
+    #grouped_xyz = grouping(xyz, idx) # (m, nsample, c_xyz)
+    grouped_xyz -= new_xyz.unsqueeze(1) # (m, nsample, c_xyz)
+    grouped_feat = feat[idx.view(-1).long()].view(m, nsample, c) # (m, nsample, c)
     #grouped_feat = grouping(feat, idx) # (m, nsample, c)
 
-    if use_xyz:
+    if not feature_only:
         return torch.cat((grouped_xyz, grouped_feat), -1) # (m, nsample, 3+c)
     else:
         return grouped_feat

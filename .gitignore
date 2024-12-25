@@ -25,3 +25,9 @@ point_transformer/models/test.py
 outputs/
 .vscode
 .DS_Store
+
+dataset/
+
+point-transformer_org
+log
+wandb

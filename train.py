@@ -6,6 +6,7 @@ import logging
 import argparse
 import shutil
 
+from tqdm import tqdm
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
@@ -15,7 +16,7 @@ import torch.utils.data
 import torch.multiprocessing as mp
 import torch.distributed as dist
 import torch.optim.lr_scheduler as lr_scheduler
-from tensorboardX import SummaryWriter
+import wandb
 
 from util import config
 from util.s3dis import S3DIS
@@ -24,10 +25,11 @@ from util.data_util import collate_fn
 from util import transform as t
 from model.pointtransformer.pointtransformer_seg import DopplerPTNet
 
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 class DopplerPTConfig:
     def __init__(self):
-        self.num_classes = 7
+        self.num_classes = 13
         self.input_channels = 4
         self.use_xyz = True
         self.device = 'cuda'
@@ -77,9 +79,9 @@ def main():
         torch.cuda.manual_seed_all(args.manual_seed)
         cudnn.benchmark = False
         cudnn.deterministic = True
-    if args.dist_url == "env://" and args.world_size == -1:
-        args.world_size = int(os.environ["WORLD_SIZE"])
-    args.distributed = args.world_size > 1 or args.multiprocessing_distributed
+    # if args.dist_url == "env://" and args.world_size == -1:
+    #     args.world_size = int(os.environ["WORLD_SIZE"])
+    # args.distributed = args.world_size > 1 or args.multiprocessing_distributed
     args.ngpus_per_node = len(args.train_gpu)
     if len(args.train_gpu) == 1:
         args.sync_bn = False
@@ -126,30 +128,35 @@ def main_worker(gpu, ngpus_per_node, argss):
        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     criterion = nn.CrossEntropyLoss(ignore_index=args.ignore_label).cuda()
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.base_lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.base_lr)#, momentum=args.momentum, weight_decay=args.weight_decay)
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[int(args.epochs*0.6), int(args.epochs*0.8)], gamma=0.1)
 
     if main_process():
-        global logger, writer
+        global logger
         logger = get_logger()
-        writer = SummaryWriter(args.save_path)
+        wandb.init(
+            project="pointcloud-segmentation",  # your project name
+            name=f"run_{time.strftime('%Y%m%d_%H%M')}",  # unique run name
+            config=args  # logs all hyperparameters automatically
+        )
         logger.info(args)
         logger.info("=> creating model ...")
         logger.info("Classes: {}".format(args.classes))
-        logger.info(model)
-    if args.distributed:
-        torch.cuda.set_device(gpu)
-        args.batch_size = int(args.batch_size / ngpus_per_node)
-        args.batch_size_val = int(args.batch_size_val / ngpus_per_node)
-        args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
-        model = torch.nn.parallel.DistributedDataParallel(
-            model.cuda(),
-            device_ids=[gpu],
-            find_unused_parameters=True if "transformer" in args.arch else False
-        )
+        # logger.info(model)
+    # if args.distributed:
+    #     import ipdb; ipdb.set_trace()
+    #     torch.cuda.set_device(gpu)
+    #     args.batch_size = int(args.batch_size / ngpus_per_node)
+    #     args.batch_size_val = int(args.batch_size_val / ngpus_per_node)
+    #     args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
+    #     model = torch.nn.parallel.DistributedDataParallel(
+    #         model.cuda(),
+    #         device_ids=[gpu],
+    #         find_unused_parameters=True if "transformer" in args.arch else False
+    #     )
 
-    else:
-        model = torch.nn.DataParallel(model.cuda())
+    # else:
+    #     model = torch.nn.DataParallel(model.cuda())
 
     if args.weight:
         if os.path.isfile(args.weight):
@@ -162,30 +169,33 @@ def main_worker(gpu, ngpus_per_node, argss):
         else:
             logger.info("=> no weight found at '{}'".format(args.weight))
 
-    if args.resume:
-        if os.path.isfile(args.resume):
-            if main_process():
-                logger.info("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume, map_location=lambda storage, loc: storage.cuda())
-            args.start_epoch = checkpoint['epoch']
-            model.load_state_dict(checkpoint['state_dict'], strict=True)
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            scheduler.load_state_dict(checkpoint['scheduler'])
-            #best_iou = 40.0
-            best_iou = checkpoint['best_iou']
-            if main_process():
-                logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
-        else:
-            if main_process():
-                logger.info("=> no checkpoint found at '{}'".format(args.resume))
+    # if args.resume:
+    #     if os.path.isfile(args.resume):
+    #         if main_process():
+    #             logger.info("=> loading checkpoint '{}'".format(args.resume))
+    #         checkpoint = torch.load(args.resume, map_location=lambda storage, loc: storage.cuda())
+    #         args.start_epoch = checkpoint['epoch']
+    #         model.load_state_dict(checkpoint['state_dict'], strict=True)
+    #         optimizer.load_state_dict(checkpoint['optimizer'])
+    #         scheduler.load_state_dict(checkpoint['scheduler'])
+    #         #best_iou = 40.0
+    #         best_iou = checkpoint['best_iou']
+    #         if main_process():
+    #             logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
+    #     else:
+    #         if main_process():
+    #             logger.info("=> no checkpoint found at '{}'".format(args.resume))
 
     train_transform = t.Compose([t.RandomScale([0.9, 1.1]), t.ChromaticAutoContrast(), t.ChromaticTranslation(), t.ChromaticJitter(), t.HueSaturationTranslation()])
-    train_data = S3DIS(split='train', data_root=args.data_root, test_area=args.test_area, voxel_size=args.voxel_size, voxel_max=args.voxel_max, transform=train_transform, shuffle_index=True, loop=args.loop)
+    train_data = S3DIS(split='train', data_root=args.data_root, 
+                       test_area=args.test_area, voxel_size=args.voxel_size, voxel_max=args.voxel_max, transform=train_transform, shuffle_index=True, loop=args.loop)
     if main_process():
-            logger.info("train_data samples: '{}'".format(len(train_data)))
-    else:
-        train_sampler = None
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=(train_sampler is None), num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True, collate_fn=collate_fn)
+        logger.info("train_data samples: '{}'".format(len(train_data)))
+
+    train_sampler = None
+    train_loader = torch.utils.data.DataLoader(
+        train_data, batch_size=args.batch_size, 
+        shuffle=(train_sampler is None), num_workers=args.workers, pin_memory=False, drop_last=True, collate_fn=collate_fn)
 
     val_loader = None
     if args.evaluate:
@@ -196,7 +206,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         else:
             val_sampler = None
         val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, pin_memory=True, sampler=val_sampler, collate_fn=collate_fn)
-
+    
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -204,10 +214,13 @@ def main_worker(gpu, ngpus_per_node, argss):
         scheduler.step()
         epoch_log = epoch + 1
         if main_process():
-            writer.add_scalar('loss_train', loss_train, epoch_log)
-            writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
-            writer.add_scalar('mAcc_train', mAcc_train, epoch_log)
-            writer.add_scalar('allAcc_train', allAcc_train, epoch_log)
+            wandb.log({
+                'train/loss': loss_train,
+                'train/mIoU': mIoU_train,
+                'train/mAcc': mAcc_train,
+                'train/allAcc': allAcc_train,
+                'epoch': epoch_log
+            })
 
         is_best = False
         if args.evaluate and (epoch_log % args.eval_freq == 0):
@@ -217,10 +230,13 @@ def main_worker(gpu, ngpus_per_node, argss):
                 loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion)
 
             if main_process():
-                writer.add_scalar('loss_val', loss_val, epoch_log)
-                writer.add_scalar('mIoU_val', mIoU_val, epoch_log)
-                writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
-                writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
+                wandb.log({
+                    'val/loss': loss_val,
+                    'val/mIoU': mIoU_val,
+                    'val/mAcc': mAcc_val,
+                    'val/allAcc': allAcc_val,
+                    'val/epoch': epoch_log
+                })
                 is_best = mIoU_val > best_iou
                 best_iou = max(best_iou, mIoU_val)
 
@@ -234,7 +250,7 @@ def main_worker(gpu, ngpus_per_node, argss):
                 shutil.copyfile(filename, args.save_path + '/model/model_best.pth')
 
     if main_process():
-        writer.close()
+        wandb.finish()  # Add this instead
         logger.info('==>Training done!\nBest Iou: %.3f' % (best_iou))
 
 
@@ -249,12 +265,17 @@ def train(train_loader, model, criterion, optimizer, epoch):
     model.train()
     end = time.time()
     max_iter = args.epochs * len(train_loader)
-    for i, (coord, feat, target, offset) in enumerate(train_loader):  # (n, 3), (n, c), (n), (b)
+
+    # first_sample = next(iter(train_loader))
+    # print("first_sample",first_sample)
+    for i, (coord, feat, target, offset) in tqdm(enumerate(train_loader), desc=f"Epoch:{epoch}"):
+        # (n, 3), (n, c), (n), (b)
         data_time.update(time.time() - end)
         coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
-        output = model([coord, feat, offset])
+        output = model(xyz=coord, feat=feat, offset=offset)
         if target.shape[-1] == 1:
             target = target[:, 0]  # for cls
+        assert target.min().item() >= 0 and target.max().item() < output.shape[1]
         loss = criterion(output, target)
         optimizer.zero_grad()
         loss.backward()
@@ -299,10 +320,19 @@ def train(train_loader, model, criterion, optimizer, epoch):
                                                           loss_meter=loss_meter,
                                                           accuracy=accuracy))
         if main_process():
-            writer.add_scalar('loss_train_batch', loss_meter.val, current_iter)
-            writer.add_scalar('mIoU_train_batch', np.mean(intersection / (union + 1e-10)), current_iter)
-            writer.add_scalar('mAcc_train_batch', np.mean(intersection / (target + 1e-10)), current_iter)
-            writer.add_scalar('allAcc_train_batch', accuracy, current_iter)
+            # Log metrics to wandb
+            wandb.log({
+                'train/loss_batch': loss_meter.val,
+                'train/mIoU_batch': np.mean(intersection / (union + 1e-10)),
+                'train/mAcc_batch': np.mean(intersection / (target + 1e-10)),
+                'train/allAcc_batch': accuracy,
+                'train/learning_rate': optimizer.param_groups[0]['lr'],
+                'train/epoch': epoch + 1,
+                'train/iteration': current_iter,
+                'time/batch': batch_time.val,
+                'time/data': data_time.val,
+                'time/remain': remain_time
+            }, step=current_iter)
 
     iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
     accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)

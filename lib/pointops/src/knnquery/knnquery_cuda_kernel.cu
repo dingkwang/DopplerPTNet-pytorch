@@ -1,7 +1,7 @@
 #include "../cuda_utils.h"
 #include "knnquery_cuda_kernel.h"
 
-
+// Swap two float values
 __device__ void swap_float(float *x, float *y)
 {
     float tmp = *x;
@@ -9,7 +9,7 @@ __device__ void swap_float(float *x, float *y)
     *y = tmp;
 }
 
-
+// Swap two int values
 __device__ void swap_int(int *x, int *y)
 {
     int tmp = *x;
@@ -17,7 +17,7 @@ __device__ void swap_int(int *x, int *y)
     *y = tmp;
 }
 
-
+// Reheap the heap to maintain the max-heap property
 __device__ void reheap(float *dist, int *idx, int k)
 {
     int root = 0;
@@ -35,7 +35,7 @@ __device__ void reheap(float *dist, int *idx, int k)
     }
 }
 
-
+// Perform heap sort on the heap
 __device__ void heap_sort(float *dist, int *idx, int k)
 {
     int i;
@@ -47,7 +47,7 @@ __device__ void heap_sort(float *dist, int *idx, int k)
     }
 }
 
-
+// Get the batch index for a given point index
 __device__ int get_bt_idx(int idx, const int *offset)
 {
     int i = 0;
@@ -61,16 +61,21 @@ __device__ int get_bt_idx(int idx, const int *offset)
     return i;
 }
 
-
+// CUDA kernel for KNN query
 __global__ void knnquery_cuda_kernel(int m, int nsample, const float *__restrict__ xyz, const float *__restrict__ new_xyz, const int *__restrict__ offset, const int *__restrict__ new_offset, int *__restrict__ idx, float *__restrict__ dist2) {
     // input: xyz (n, 3) new_xyz (m, 3)
     // output: idx (m, nsample) dist2 (m, nsample)
+    
+    // Calculate the point index for the current thread
     int pt_idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (pt_idx >= m) return;
+    if (pt_idx >= m) return; // Exit if the point index exceeds the number of points
 
+    // Adjust pointers to the current point
     new_xyz += pt_idx * 3;
     idx += pt_idx * nsample;
     dist2 += pt_idx * nsample;
+
+    // Determine the batch index for the current point
     int bt_idx = get_bt_idx(pt_idx, new_offset);
     int start;
     if (bt_idx == 0)
@@ -79,16 +84,20 @@ __global__ void knnquery_cuda_kernel(int m, int nsample, const float *__restrict
         start = offset[bt_idx - 1];
     int end = offset[bt_idx];
 
+    // Extract the coordinates of the current point
     float new_x = new_xyz[0];
     float new_y = new_xyz[1];
     float new_z = new_xyz[2];
 
+    // Initialize arrays to store the best distances and indices
     float best_dist[100];
     int best_idx[100];
     for(int i = 0; i < nsample; i++){
         best_dist[i] = 1e10;
         best_idx[i] = start;
     }
+
+    // Iterate over all points in the batch to find the nearest neighbors
     for(int i = start; i < end; i++){
         float x = xyz[i * 3 + 0];
         float y = xyz[i * 3 + 1];
@@ -97,17 +106,21 @@ __global__ void knnquery_cuda_kernel(int m, int nsample, const float *__restrict
         if (d2 < best_dist[0]){
             best_dist[0] = d2;
             best_idx[0] = i;
-            reheap(best_dist, best_idx, nsample);
+            reheap(best_dist, best_idx, nsample); // Maintain the max-heap property
         }
     }
+
+    // Sort the best distances and indices
     heap_sort(best_dist, best_idx, nsample);
+
+    // Store the results in the output arrays
     for(int i = 0; i < nsample; i++){
         idx[i] = best_idx[i];
         dist2[i] = best_dist[i];
     }
 }
 
-
+// Launcher function for the KNN query CUDA kernel
 void knnquery_cuda_launcher(int m, int nsample, const float *xyz, const float *new_xyz, const int *offset, const int *new_offset, int *idx, float *dist2) {
     // input: new_xyz: (m, 3), xyz: (n, 3), idx: (m, nsample)
     dim3 blocks(DIVUP(m, THREADS_PER_BLOCK));

@@ -17,8 +17,8 @@ from util import config
 from util.common_util import AverageMeter, intersectionAndUnion, check_makedirs
 from util.voxelize import voxelize
 
-random.seed(123)
-np.random.seed(123)
+random.seed(47)
+np.random.seed(47)
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Point Cloud Semantic Segmentation')
