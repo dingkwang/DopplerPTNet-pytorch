@@ -1,8 +1,5 @@
-from typing import Tuple
-
 import torch
 from torch.autograd import Function
-import torch.nn as nn
 
 import pointops_cuda
 
@@ -204,16 +201,8 @@ def interpolation(xyz, new_xyz, feat, offset, new_offset, k=3):
     norm = torch.sum(dist_recip, dim=1, keepdim=True)
     weight = dist_recip / norm  # (n, k)
 
-    n, c = new_xyz.shape[0], feat.shape[1]
-    new_feat = torch.zeros(n, c, device=feat.device, dtype=feat.dtype)  # Initialize output
-
-    # Use nested loops for debugging
-    for i in range(n):  # Iterate over new points
-        for j in range(k):  # Iterate over k nearest neighbors
-            neighbor_idx = int(idx[i, j])  # Get the index of the j-th nearest neighbor
-            new_feat[i] += feat[neighbor_idx] * weight[i, j]  # Accumulate weighted features
-
-    return new_feat
+    new_feat_fast = torch.einsum('ijk,ij->ik', feat[idx.long()], weight)
+    return new_feat_fast
 
 
 

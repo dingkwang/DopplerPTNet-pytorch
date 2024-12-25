@@ -1,23 +1,22 @@
 # Point Transformer
-This repository reproduces [Point Transformer](https://arxiv.org/abs/2012.09164). \
-The codebase is provided by the first author of [Point Transformer](https://arxiv.org/abs/2012.09164).
+This repository reproduces [DopplerPTNet](https://iopscience.iop.org/article/10.1088/1742-6596/2809/1/012006). \
+The codebase is an unofficial implementation of DopplerPTNet for semantic segmentation.
 
-## Notes
-- For shape classification and part segmentation, please use paconv-codebase branch. After some testing, we will merge it into the master branch.
 
 ---
 ## Dependencies
-- Ubuntu: 18.04 or higher
+- Ubuntu: 20.04 or higher
 - PyTorch: 1.9.0 
 - CUDA: 11.1 
-- Hardware: 4GPUs (TITAN RTX) to reproduce [Point Transformer](https://arxiv.org/abs/2012.09164) 
+- Hardware: Batch size 16 requires 48GB memory. 
 - To create conda environment, command as follows:
 
   ```
-  bash env_setup.sh pt
+  bash env_setup.sh dopplerpt
   ```
 
 ## Dataset preparation
+- No public dataset for doppler lidar point cloud yet. 
 - Download S3DIS [dataset](https://drive.google.com/uc?export=download&id=1KUxWagmEWnvMhEb4FRwq2Mj0aa3U3xUf) and symlink the paths to them as follows:
 
      ```
@@ -36,7 +35,7 @@ The codebase is provided by the first author of [Point Transformer](https://arxi
     - Specify the gpu used in config and then do training:
 
       ```
-      sh tool/train.sh s3dis pointtransformer_repro
+      python train.py --config config/s3dis/s3dis_pointtransformer_repro.yaml
       ```
 
   - Test
@@ -44,31 +43,30 @@ The codebase is provided by the first author of [Point Transformer](https://arxi
     - Afer training, you can test the checkpoint as follows:
 
       ```
-      CUDA_VISIBLE_DEVICES=0 sh tool/test.sh s3dis pointtransformer_repro
+      CUDA_VISIBLE_DEVICES=0 python test.py config/s3dis/s3dis_pointtransformer_repro.yaml
       ```
   ---
 ## Experimental Results
-
-- Semanctic Segmentation on S3DIS Area 5
-
-  |Model | mAcc | OA | mIoU |
-  |-------| ------| ----| -------|
-  |Paper| 76.5 | 90.8 | 70.4 |
-  |Hengshuang's code | 76.8 | 90.4 | 70.0 |
 ---
 ## References
 
-If you use this code, please cite [Point Transformer](https://arxiv.org/abs/2012.09164):
+If you use this code, please cite:
 ```
-@inproceedings{zhao2021point,
-  title={Point transformer},
-  author={Zhao, Hengshuang and Jiang, Li and Jia, Jiaya and Torr, Philip HS and Koltun, Vladlen},
-  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision},
-  pages={16259--16268},
-  year={2021}
+@misc{dwang2024,
+  title={DopplerPTNet-pytorch}, 
+  author={Dingkang Wang},
+  year={2023},
+}
+@software{DopplerPointTransformerNet-pytorch,
+  author = {Dingkang Wang},
+  month = {12},
+  title = {{DopplerPointTransformerNet-pytorch}},
+  url = {https://github.com/dingkwang/DopplerPTNet-pytorch},
+  version = {0.1},
+  year = {2024}
 }
 ```
 
 ## Acknowledgement
-The code is from the first author of [Point Transformer](https://arxiv.org/abs/2012.09164).
-We also refer [PAConv repository](https://github.com/CVMI-Lab/PAConv).
+The description is from [DopplerPTNet: Object Detection Network with Doppler Velocity Information for FMCW LiDAR Point Cloud](https://iopscience.iop.org/article/10.1088/1742-6596/2809/1/012006).
+I also refer [point-transformer](https://github.com/POSTECH-CVLab/point-transformer).

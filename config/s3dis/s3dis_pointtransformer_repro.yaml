@@ -13,8 +13,8 @@ TRAIN:
   sync_bn: False
   ignore_label: 255
   train_gpu: [0]
-  workers: 0  # data loader workers
-  batch_size: 3  # batch size for training
+  workers: 4  # data loader workers
+  batch_size: 16  # batch size for training 16: 48GB memory.
   batch_size_val: 4  # batch size for validation during training, memory and speed tradeoff
   base_lr: 0.5
   epochs: 100

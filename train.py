@@ -6,7 +6,6 @@ import logging
 import argparse
 import shutil
 
-from tqdm import tqdm
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
@@ -25,7 +24,7 @@ from util.data_util import collate_fn
 from util import transform as t
 from model.pointtransformer.pointtransformer_seg import DopplerPTNet
 
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+# os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 class DopplerPTConfig:
     def __init__(self):
@@ -53,7 +52,7 @@ def get_logger():
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.INFO)
     handler = logging.StreamHandler()
-    fmt = "[%(asctime)s %(levelname)s %(filename)s line %(lineno)d %(process)d] %(message)s"
+    fmt = "[%(asctime)s %(levelname)s %(filename)s line %(lineno)d] %(message)s"
     handler.setFormatter(logging.Formatter(fmt))
     logger.addHandler(handler)
     return logger
@@ -215,10 +214,10 @@ def main_worker(gpu, ngpus_per_node, argss):
         epoch_log = epoch + 1
         if main_process():
             wandb.log({
-                'train/loss': loss_train,
-                'train/mIoU': mIoU_train,
-                'train/mAcc': mAcc_train,
-                'train/allAcc': allAcc_train,
+                'train/epoch_loss': loss_train,
+                'train/epoch_mIoU': mIoU_train,
+                'train/epoch_mAcc': mAcc_train,
+                'train/epoch_allAcc': allAcc_train,
                 'epoch': epoch_log
             })
 
@@ -266,9 +265,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
     end = time.time()
     max_iter = args.epochs * len(train_loader)
 
-    # first_sample = next(iter(train_loader))
-    # print("first_sample",first_sample)
-    for i, (coord, feat, target, offset) in tqdm(enumerate(train_loader), desc=f"Epoch:{epoch}"):
+    for i, (coord, feat, target, offset) in enumerate(train_loader):
         # (n, 3), (n, c), (n), (b)
         data_time.update(time.time() - end)
         coord, feat, target, offset = coord.cuda(non_blocking=True), feat.cuda(non_blocking=True), target.cuda(non_blocking=True), offset.cuda(non_blocking=True)
@@ -322,6 +319,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         if main_process():
             # Log metrics to wandb
             wandb.log({
+                'train/loss': loss.item(),
                 'train/loss_batch': loss_meter.val,
                 'train/mIoU_batch': np.mean(intersection / (union + 1e-10)),
                 'train/mAcc_batch': np.mean(intersection / (target + 1e-10)),

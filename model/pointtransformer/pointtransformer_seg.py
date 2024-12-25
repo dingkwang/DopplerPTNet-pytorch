@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# from lib.pointops.functions import pointops
 from lib.pointops.functions import pointops_cuda as pointops
 
 class PointnetFPModule(nn.Module):
@@ -101,11 +100,6 @@ class DopplerPTNet(nn.Module):
         self.fp2 = PointnetFPModule(in_planes=planes[2], out_planes=planes[1])
         self.fp1 = PointnetFPModule(in_planes=planes[1], out_planes=planes[0])
 
-        # Final fully connected layers for point-wise classification
-        # self.fc1 = nn.Linear(128, 128).to(device)
-        # self.dropout = nn.Dropout(0.5).to(device)
-
-        # self.fc2 = nn.Linear(128, num_classes).to(device)
         self.cls = nn.Sequential(
             nn.Linear(planes[0], planes[0]).to(self.device),
             nn.BatchNorm1d(planes[0]).to(self.device),  # Add Batch Normalization
@@ -420,7 +414,8 @@ class PointNetSetAbstractionPN2(nn.Module):
     def forward(self, xyz, feat, offset, velocities):
         if self.stride != 1: # sa2, sa3, sa4
             stride_tensor = torch.tensor(self.stride, device=offset.device)
-            count = torch.floor_divide(offset[0], stride_tensor)
+            # count = torch.floor_divide(offset[0], stride_tensor)
+            count  = torch.div(offset[0], stride_tensor, rounding_mode='trunc')
             new_offset = [count.clone()]  # Clone the tensor to ensure it's a separate copy
             for i in range(1, offset.shape[0]):
                 count += (offset[i].item() - offset[i - 1].item()) // self.stride
