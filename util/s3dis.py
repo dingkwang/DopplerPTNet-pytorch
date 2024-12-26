@@ -1,5 +1,8 @@
 import os
+
 import numpy as np
+import torch
+
 from torch.utils.data import Dataset
 from util.data_util import data_prepare
 
@@ -47,7 +50,8 @@ class S3DIS(Dataset):
                                         self.voxel_size, self.voxel_max, 
                                         self.transform, self.shuffle_index)
         if self.velocity:
-            feat = feat[:, :1]
+            n = coord.shape[0]
+            feat = torch.zeros((n, 1))
         return coord, feat, label
 
     def __len__(self):

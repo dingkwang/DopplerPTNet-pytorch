@@ -1,4 +1,4 @@
-# Point Transformer
+# FMCW_Doppler_PointTransformerNet
 This repository reproduces [DopplerPTNet](https://iopscience.iop.org/article/10.1088/1742-6596/2809/1/012006). \
 The codebase is an unofficial implementation of DopplerPTNet for semantic segmentation. \
 This code is created based on the descroption of [DopplerPTNet](https://iopscience.iop.org/article/10.1088/1742-6596/2809/1/012006). If you find the implementation is not accurate, please raise an issue.
@@ -48,15 +48,19 @@ This code is created based on the descroption of [DopplerPTNet](https://iopscien
   ---
 ## Experimental Results
 ---
+
+## TODO
+- [x] Semantic segmentation training and testing code
+- [ ] Object detection training code
+- [ ] Experiment result on non-FMCW LIDAR
+- [ ] Experiment result on FMCW LIDAR
+- [ ] CUDA Deployment code
+
+---
 ## References
 
 If you use this code, please cite:
 ```
-@misc{dwang2024,
-  title={DopplerPTNet-pytorch}, 
-  author={Dingkang Wang},
-  year={2023},
-}
 @software{DopplerPointTransformerNet-pytorch,
   author = {Dingkang Wang},
   month = {12},

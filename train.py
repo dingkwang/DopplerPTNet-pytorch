@@ -26,14 +26,7 @@ from model.pointtransformer.pointtransformer_seg import DopplerPTNet
 
 # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
-class DopplerPTConfig:
-    def __init__(self):
-        self.num_classes = 13
-        self.input_channels = 4
-        self.use_xyz = True
-        self.device = 'cuda'
-model_config = DopplerPTConfig()
-
+DEVICE = 'cuda'
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Point Cloud Semantic Segmentation')
@@ -111,17 +104,10 @@ def main_worker(gpu, ngpus_per_node, argss):
     #         args.rank = args.rank * ngpus_per_node + gpu
     #     dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
 
-    # if args.arch == 'pointtransformer_seg_repro':
-    #     from model.pointtransformer.pointtransformer_seg import pointtransformer_seg_repro as Model
-    # else:
-    #     raise Exception('architecture not supported yet'.format(args.arch))
-    
     model = DopplerPTNet(
-        num_classes=model_config.num_classes,
-        input_channels=model_config.input_channels,
-        use_xyz=model_config.use_xyz,
-        device=model_config.device,
-    ).to(model_config.device)
+        num_classes=args.classes,
+        input_channels=args.fea_dim,
+    ).to(DEVICE)
 
     if args.sync_bn:
        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -142,20 +128,6 @@ def main_worker(gpu, ngpus_per_node, argss):
         logger.info("=> creating model ...")
         logger.info("Classes: {}".format(args.classes))
         # logger.info(model)
-    # if args.distributed:
-    #     import ipdb; ipdb.set_trace()
-    #     torch.cuda.set_device(gpu)
-    #     args.batch_size = int(args.batch_size / ngpus_per_node)
-    #     args.batch_size_val = int(args.batch_size_val / ngpus_per_node)
-    #     args.workers = int((args.workers + ngpus_per_node - 1) / ngpus_per_node)
-    #     model = torch.nn.parallel.DistributedDataParallel(
-    #         model.cuda(),
-    #         device_ids=[gpu],
-    #         find_unused_parameters=True if "transformer" in args.arch else False
-    #     )
-
-    # else:
-    #     model = torch.nn.DataParallel(model.cuda())
 
     if args.weight:
         if os.path.isfile(args.weight):
@@ -168,22 +140,21 @@ def main_worker(gpu, ngpus_per_node, argss):
         else:
             logger.info("=> no weight found at '{}'".format(args.weight))
 
-    # if args.resume:
-    #     if os.path.isfile(args.resume):
-    #         if main_process():
-    #             logger.info("=> loading checkpoint '{}'".format(args.resume))
-    #         checkpoint = torch.load(args.resume, map_location=lambda storage, loc: storage.cuda())
-    #         args.start_epoch = checkpoint['epoch']
-    #         model.load_state_dict(checkpoint['state_dict'], strict=True)
-    #         optimizer.load_state_dict(checkpoint['optimizer'])
-    #         scheduler.load_state_dict(checkpoint['scheduler'])
-    #         #best_iou = 40.0
-    #         best_iou = checkpoint['best_iou']
-    #         if main_process():
-    #             logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
-    #     else:
-    #         if main_process():
-    #             logger.info("=> no checkpoint found at '{}'".format(args.resume))
+    if args.resume:
+        if os.path.isfile(args.resume):
+            if main_process():
+                logger.info("=> loading checkpoint '{}'".format(args.resume))
+            checkpoint = torch.load(args.resume, map_location=lambda storage, loc: storage.cuda())
+            args.start_epoch = checkpoint['epoch']
+            model.load_state_dict(checkpoint['state_dict'], strict=True)
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            scheduler.load_state_dict(checkpoint['scheduler'])
+            best_iou = checkpoint['best_iou']
+            if main_process():
+                logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
+        else:
+            if main_process():
+                logger.info("=> no checkpoint found at '{}'".format(args.resume))
 
     train_transform = t.Compose([t.RandomScale([0.9, 1.1]), t.ChromaticAutoContrast(), t.ChromaticTranslation(), t.ChromaticJitter(), t.HueSaturationTranslation()])
     train_data = S3DIS(split='train', data_root=args.data_root, 
@@ -209,6 +180,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
+        validate(val_loader, model, criterion)
         loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, criterion, optimizer, epoch)
         scheduler.step()
         epoch_log = epoch + 1
@@ -223,10 +195,7 @@ def main_worker(gpu, ngpus_per_node, argss):
 
         is_best = False
         if args.evaluate and (epoch_log % args.eval_freq == 0):
-            if args.data_name == 'shapenet':
-                raise NotImplementedError()
-            else:
-                loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion)
+            loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion)
 
             if main_process():
                 wandb.log({
@@ -240,13 +209,13 @@ def main_worker(gpu, ngpus_per_node, argss):
                 best_iou = max(best_iou, mIoU_val)
 
         if (epoch_log % args.save_freq == 0) and main_process():
-            filename = args.save_path + '/model/model_last.pth'
+            filename = args.save_path + '/model_last.pth'
             logger.info('Saving checkpoint to: ' + filename)
             torch.save({'epoch': epoch_log, 'state_dict': model.state_dict(), 'optimizer': optimizer.state_dict(),
                         'scheduler': scheduler.state_dict(), 'best_iou': best_iou, 'is_best': is_best}, filename)
             if is_best:
                 logger.info('Best validation mIoU updated to: {:.4f}'.format(best_iou))
-                shutil.copyfile(filename, args.save_path + '/model/model_best.pth')
+                shutil.copyfile(filename, args.save_path + '/model_best.pth')
 
     if main_process():
         wandb.finish()  # Add this instead
@@ -316,6 +285,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
                                                           remain_time=remain_time,
                                                           loss_meter=loss_meter,
                                                           accuracy=accuracy))
+            
         if main_process():
             # Log metrics to wandb
             wandb.log({
@@ -331,6 +301,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
                 'time/data': data_time.val,
                 'time/remain': remain_time
             }, step=current_iter)
+            if i> 10:
+                break
 
     iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
     accuracy_class = intersection_meter.sum / (target_meter.sum + 1e-10)
@@ -360,8 +332,8 @@ def validate(val_loader, model, criterion):
         if target.shape[-1] == 1:
             target = target[:, 0]  # for cls
         with torch.no_grad():
-            output = model([coord, feat, offset])
-        loss = criterion(output, target)
+            output = model(xyz=coord, feat=feat, offset=offset)
+            loss = criterion(output, target)
 
         output = output.max(1)[1]
         n = coord.size(0)

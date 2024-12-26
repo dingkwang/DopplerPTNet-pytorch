@@ -5,8 +5,6 @@ import numpy as np
 import logging
 import pickle
 import argparse
-import collections
-
 import torch
 import torch.nn as nn
 import torch.nn.parallel
@@ -18,18 +16,10 @@ from util.common_util import AverageMeter, intersectionAndUnion, check_makedirs
 from util.voxelize import voxelize
 from model.pointtransformer.pointtransformer_seg import DopplerPTNet
 
+DEVICE = 'cuda'
 
 random.seed(47)
 np.random.seed(47)
-
-class DopplerPTConfig:
-    def __init__(self):
-        self.num_classes = 13
-        self.input_channels = 4
-        self.use_xyz = True
-        self.device = 'cuda'
-model_config = DopplerPTConfig()
-
 
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Point Cloud Semantic Segmentation')
@@ -63,16 +53,10 @@ def main():
     logger.info("=> creating model ...")
     logger.info("Classes: {}".format(args.classes))
 
-    if args.arch == 'pointtransformer_seg_repro':
-        from model.pointtransformer.pointtransformer_seg import pointtransformer_seg_repro as Model
-    else:
-        raise Exception('architecture not supported yet'.format(args.arch))
     model = DopplerPTNet(
-        num_classes=model_config.num_classes,
-        input_channels=model_config.input_channels,
-        use_xyz=model_config.use_xyz,
-        device=model_config.device,
-    ).to(model_config.device)
+        num_classes=args.classes,
+        input_channels=args.fea_dim,
+    ).to(DEVICE)
 
     logger.info(model)
     criterion = nn.CrossEntropyLoss(ignore_index=args.ignore_label).cuda()
@@ -80,12 +64,7 @@ def main():
     if os.path.isfile(args.model_path):
         logger.info("=> loading checkpoint '{}'".format(args.model_path))
         checkpoint = torch.load(args.model_path)
-        state_dict = checkpoint['state_dict']
-        new_state_dict = collections.OrderedDict()
-        for k, v in state_dict.items():
-            name = k[7:]
-            new_state_dict[name] = v
-        model.load_state_dict(new_state_dict, strict=True)
+        model.load_state_dict(checkpoint['state_dict'], strict=True)
         logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.model_path, checkpoint['epoch']))
         args.epoch = checkpoint['epoch']
     else:
@@ -154,9 +133,10 @@ def test(model, criterion, names):
             idx_size = len(idx_data)
             idx_list, coord_list, feat_list, offset_list  = [], [], [], []
             for i in range(idx_size):
-                logger.info('{}/{}: {}/{}/{}, {}'.format(idx + 1, len(data_list), i + 1, idx_size, idx_data[0].shape[0], item))
+                # logger.info('{}/{}: {}/{}/{}, {}'.format(idx + 1, len(data_list), i + 1, idx_size, idx_data[0].shape[0], item))
                 idx_part = idx_data[i]
-                coord_part, feat_part = coord[idx_part], feat[idx_part]
+                coord_part = coord[idx_part]
+                feat_part = np.zeros((coord_part.shape[0], 1))
                 if args.voxel_max and coord_part.shape[0] > args.voxel_max:
                     coord_p, idx_uni, cnt = np.random.rand(coord_part.shape[0]) * 1e-3, np.array([]), 0
                     while idx_uni.size != idx_part.shape[0]:
@@ -182,7 +162,7 @@ def test(model, criterion, names):
                 feat_part = torch.FloatTensor(np.concatenate(feat_part)).cuda(non_blocking=True)
                 offset_part = torch.IntTensor(np.cumsum(offset_part)).cuda(non_blocking=True)
                 with torch.no_grad():
-                    pred_part = model([coord_part, feat_part, offset_part])  # (n, k)
+                    pred_part = model(xyz=coord_part, feat=feat_part, offset=offset_part)
                 torch.cuda.empty_cache()
                 pred[idx_part, :] += pred_part
                 logger.info('Test: {}/{}, {}/{}, {}/{}'.format(idx + 1, len(data_list), e_i, len(idx_list), args.voxel_max, idx_part.shape[0]))

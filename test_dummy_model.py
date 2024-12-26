@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 from model.pointtransformer.pointtransformer_seg import DopplerPTNet
-# from fvcore.nn import FlopCountAnalysis, parameter_count
-
 
 class DopplerPTConfig:
 
@@ -22,13 +20,6 @@ def test_model():
         device=config.device,
     ).to(config.device)
 
-    # for name, param in model.named_parameters():
-    #     if False:
-    #         param.requires_grad = False
-    #         print("Freezing", name)
-    #     else:
-    #         print("Training", name)
-
     offset = torch.IntTensor([10000, 20001, 30002]).to(config.device)
     xyz = torch.randn(offset[-1], 3).to(config.device)
     velocity = feat = torch.randn(offset[-1], 1).to(config.device)
@@ -42,16 +33,6 @@ def test_model():
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
-
-
-    # flops = FlopCountAnalysis(model, (xyz, feat, offset))
-    # print(f"FLOPs: {flops.total()}")
-    # print(f"Params: {parameter_count(model)}")
-    
-    #, momentum=args.momentum, weight_decay=args.weight_decay)
-
-
-    return 
 
 
 if __name__ == "__main__":

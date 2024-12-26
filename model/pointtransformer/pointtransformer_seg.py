@@ -56,14 +56,13 @@ class PointnetFPModule(nn.Module):
 
 
 class DopplerPTNet(nn.Module):
-    def __init__(self, num_classes, input_channels=4, use_xyz=True, device='cuda'):
+    def __init__(self, num_classes, input_channels=4, device='cuda'):
         super(DopplerPTNet, self).__init__()
         self.device = device
         self.in_planes, planes = input_channels, [64, 128, 256, 512]
         strides, nsamples = [1, 4, 4, 4], [16, 16, 16, 16]
 
         self.num_classes = num_classes
-        self.use_xyz = use_xyz
 
         # Encoder (Set Abstraction modules)
 
